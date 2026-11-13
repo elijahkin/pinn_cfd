@@ -1,0 +1,4 @@
+/home/eli/.local/lib/python3.13/site-packages/torch/cuda/__init__.py:734: UserWarning: Can't initialize NVML
+  warnings.warn("Can't initialize NVML")
+nonlinear/depth4_width64: device=cuda (NVIDIA GeForce RTX 3060)
+nonlinear/depth4_width64   seed=1 params= 16897 L1=4.340e-02 L2=8.187e-02 Linf=5.767e-01 (3.1 min)

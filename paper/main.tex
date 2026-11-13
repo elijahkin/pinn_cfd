@@ -1,0 +1,444 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage[numbers,sort&compress]{natbib}
+
+\floatplacement{figure}{H}
+
+\newcommand{\resultsdir}{figures}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+
+\title{Physics-Informed Neural Networks for the One-Dimensional\\
+Convection--Diffusion Equation}
+\author{Elijah Kin}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+  We compare physics-informed neural networks (PINNs) with a limited
+  Lax--Wendroff finite-volume scheme for the one-dimensional linear and
+  nonlinear convection--diffusion equation with a discontinuous initial
+  condition, an oscillatory Dirichlet inflow, and a zero-gradient outflow. A
+  three-grid Richardson extrapolation of the limited Lax--Wendroff scheme
+  provides the reference. Its $L^1$ self-convergence estimate is
+  $1.3$--$5.6\times10^{-5}$ for $\nu\ge0.002$ and
+  $1.4$--$3.9\times10^{-4}$ at the stress-test value $\nu=10^{-4}$; the
+  corresponding $L^\infty$ estimate on the common evaluation grid is
+  $5.7\times10^{-4}$--$5.4\times10^{-3}$ and $4\times10^{-2}$--$10^{-1}$,
+  respectively. Across six cases, the limited scheme has four to nine times
+  lower $L^1$ error than a baseline $\tanh$ PINN at $\Delta x=\pi/200$. The
+  PINN's $L^\infty$ error is dominated by the initial datum: a hard branch
+  that imposes the datum exactly removes this contribution without adding
+  parameters. Across the exact-IC sweep of eight plain architectures (five
+  seeds each), the mean $L^\infty$ is $0.25$--$0.43$ on the linear problem and
+  $0.18$--$0.35$ on the nonlinear problem, compared with $0.70$--$0.80$ for the
+  soft-IC $4\times64$ baseline. The lowest mean PINN values ($0.25$--$0.27$
+  linear, $0.18$--$0.19$ nonlinear) remain about $2.5$--$3$ times the
+  finite-volume values on the same grid. Exact initial conditions therefore
+  close neither the $L^1$ nor the $L^\infty$ gap. The lowest observed mean
+  linear $L^1$ is the $4\times64$ sine network; larger or deeper sine networks
+  do not improve the tradeoff. The lowest observed mean nonlinear $L^\infty$
+  is the $4\times64$ or $6\times64$ $\tanh$ network; differences among the best
+  architectures are within one standard deviation in both cases, so these
+  rankings are indicative rather than statistically resolved. All PINN runs
+  use 3000 epochs; a baseline run takes about $2.4$ min on a single NVIDIA
+  GeForce RTX 3060, and the hard-IC sweep was run with multiple jobs
+  concurrently on the same GPU.
+\end{abstract}
+
+\section{Background: the convection--diffusion equation}
+\label{sec:background}
+The convection--diffusion equation couples advection, which transports $u$ with
+speed $f'(u)$, with diffusion, which smooths gradients at rate $\nu$. For
+$f=au$ a step becomes a heat front of thickness $O(\sqrt{\nu t})$; for
+$f=u^2/2$ (Burgers' equation) a compressive step steepens into a shock of width
+$O(\nu/\Delta u)$, whereas the expansive step used here opens into a
+rarefaction, and the oscillatory inflow generates shocks downstream. Thin
+fronts are hard for low-order finite-volume
+schemes unless limited \citep{leveque2002}, and for smooth $\tanh$ networks,
+which are spectrally biased toward low frequencies \citep{rahaman2019} and need
+explicit high-frequency features to fit a moving discontinuity
+\citep{tancik2020}. The convection-dominated limit is difficult for PINNs. We
+ask how a baseline PINN compares with a limited finite-volume scheme on this
+problem, whether exact initial conditions close the $L^\infty$ gap, and which
+architecture is best once the initial layer is removed.
+
+\section{Problem formulation}
+\label{sec:problem}
+We solve
+\begin{equation}
+  u_t + f_x = \nu u_{xx}, \qquad 0 \le x \le \pi,\quad t \ge 0,
+  \qquad
+  f =
+  \begin{cases} u & \text{linear},\\ u^2/2 & \text{nonlinear},
+  \end{cases}
+\end{equation}
+with the discontinuous initial condition
+\begin{equation}
+  u(x,0) =
+  \begin{cases} 1/2 & x < \pi/2,\\ 3/2 & x \ge \pi/2,
+  \end{cases}
+  \label{eq:ic}
+\end{equation}
+the oscillatory Dirichlet inflow condition
+\begin{equation}
+  u(0,t) = 1 - \tfrac14\cos(4t) - \tfrac14\cos(8t),
+\end{equation}
+and the zero-gradient outflow condition $u_x(\pi,t) = 0$. We consider
+$\nu \in \{0.012, 0.004, 0.002\}$ and, as a stress test, $\nu = 10^{-4}$.
+For $\nu = 0$ the linear problem has the closed-form traveling solution used
+to validate the classical solvers.
+
+With unit advection speed the final time $t=\pi$ is one flow-through. The
+initial jump leaves the domain before $t=\pi$, but its diffusive imprint
+persists and remains difficult for the network to represent. The inflow
+supplies a continuously varying signal at frequencies $\omega\in\{4,8\}$, and
+the solution contains a smooth traveling pulse together with a sharp, decaying
+front.
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Classical finite-volume scheme and reference}
+The comparison solver combines a limited Lax--Wendroff convective flux with a
+trapezoidal (Crank--Nicolson) diffusion term and solves a tridiagonal system
+for the interior unknowns. It uses the van Leer monotonized-central (MC)
+limiter. The left boundary is Dirichlet; the right boundary uses the
+zero-gradient condition $u_{j_{\max}} = u_{j_{\max}-1}$. All finite-volume and
+reference solves use the CFL number $\Delta t/\Delta x=0.5$.
+
+The limiter is applied to the convective interface flux in the standard
+limited Lax--Wendroff form \citep{leveque2002}; the diffusion terms are
+centered in time and space.
+
+The reference is the three-grid Richardson extrapolation of the limited
+Lax--Wendroff (van Leer MC) scheme. Because the limited scheme is only
+first order across the moving discontinuity, a two-grid combination with $p=2$
+leaves the leading $O(\Delta x)$ front term. We combine
+$\Delta x=\pi/400$, $\pi/800$ and $\pi/1600$,
+\begin{equation}
+  u_{\mathrm{ref}} = u_1 + 2\,(u_1-u_2) - \tfrac13\,(u_1-u_4),
+  \label{eq:rich3}
+\end{equation}
+with $u_1$ the $\pi/1600$ solution and $u_2$, $u_4$ the $\pi/800$ and $\pi/400$
+fields interpolated onto the fine grid. This cancels both the $O(\Delta x)$ and
+$O(\Delta x^2)$ terms in an averaged sense; the cancellation is not pointwise
+at the front. The combination is applied only for $t>0$; at $t=0$ the reference
+is set to the exact initial datum, because extrapolating across the
+discontinuity produces nonphysical pointwise values.
+
+Repeating the combination one grid finer changes the field by an $L^1$ of
+$1.3$--$1.6\times10^{-5}$ at $\nu=0.012$, $1.4$--$3.0\times10^{-5}$ at
+$\nu=0.004$, and up to $5.6\times10^{-5}$ at $\nu=0.002$; at $\nu=10^{-4}$ it
+is $1.4$--$3.9\times10^{-4}$. On the common $201\times101$ evaluation grid the
+corresponding $L^\infty$ changes are $5.7\times10^{-4}$--$1.5\times10^{-3}$ for
+$\nu\ge0.004$, up to $5.4\times10^{-3}$ at $\nu=0.002$, and
+$3.9\times10^{-2}$--$1.0\times10^{-1}$ at $\nu=10^{-4}$. The $L^\infty$ error is
+localized at the front and is much larger than the $L^1$ error. We take the
+repeated-combination differences as the self-convergence estimate.
+
+\subsection{Physics-informed neural network}
+\label{sec:pinn}
+The surrogate is a physics-informed neural network \citep{raissi2019}: a
+fully connected feed-forward network $u_\theta:\mathbb{R}^2\to\mathbb{R}$ that
+takes the raw space-time coordinates $(t,x)$ as a two-dimensional input and
+returns the solution at that point. The baseline
+architecture is an input projection to width $H=64$, four hidden-to-hidden
+layers of width $64$, and a linear output, with $\tanh$ activations and
+$16{,}897$ trainable parameters; we label this network $4\times64$. The input
+is not rescaled; the network
+sees the physical coordinates in $[0,\pi]$, so no coordinate features are
+supplied.
+
+The parameters are found by minimizing the composite loss
+\begin{equation}
+  \mathcal{L} = \lambda_{\text{pde}}\mathcal{L}_{\text{pde}}
+  + \lambda_{\text{ic}}\mathcal{L}_{\text{ic}}
+  + \lambda_{\text{bc}}\mathcal{L}_{\text{bc}},
+  \label{eq:loss}
+\end{equation}
+where $\mathcal{L}_{\text{pde}}$ is the mean-squared PDE residual
+$u_t + f_x - \nu u_{xx}$ evaluated by automatic differentiation at interior
+collocation points, and $\mathcal{L}_{\text{ic}}$, $\mathcal{L}_{\text{bc}}$
+are mean-squared penalties enforcing the initial and boundary data
+(including the zero-gradient outflow condition). The residual is evaluated on
+$N_{\text{pde}}=3000$ uniformly sampled interior points, with
+$N_{\text{ic}}=128$ initial samples and $N_{\text{bc}}=128$ samples per
+boundary.
+Each epoch shuffles the collocation points and takes mini-batches of size
+$256$. We use Adam with learning rate $10^{-3}$, decayed by $0.5$ at epochs
+$1200$ and $2200$, and fixed weights
+$(\lambda_{\text{pde}},\lambda_{\text{ic}},\lambda_{\text{bc}}) = (1,10,1)$.
+All PINN results below are trained for 3000 epochs on a single NVIDIA
+GeForce RTX 3060 (12\,GB). The hard-IC sweep was executed with multiple jobs
+concurrently on the same GPU, so its per-run wall-clock times reflect GPU
+contention rather than the cost of the exact-IC branch, which adds negligible
+work.
+
+\subsection{Architecture variants}
+\label{sec:variants}
+We consider two activations, $\tanh$ and sine, at four sizes:
+$2\times32$, $4\times64$ (baseline), $6\times64$, and $4\times128$, spanning
+$2{,}241$ to $66{,}561$ parameters. The sine networks use $\sin(3z)$ and the
+SIREN initialization of Sitzmann et al. \citep{sitzmann2020}. This gives eight
+architectures; each is trained from five seeds on the linear and nonlinear
+problems at $\nu=0.012$ under the common 3000-epoch budget.
+
+\subsection{Exact initial condition}
+\label{sec:hardic}
+All architectures in Section~\ref{sec:variants} use the same treatment of the
+discontinuous datum. Let $u_\theta$ denote the raw network output. The model
+used for training and evaluation is
+\begin{equation}
+  \tilde u_\theta(t,x) =
+  \begin{cases}
+    u_0(x), & t=0,\\
+    u_\theta(t,x), & t>0,
+  \end{cases}
+  \label{eq:hardic}
+\end{equation}
+where $u_0$ is the step of Eq.~\eqref{eq:ic}. At the $t=0$ collocation and
+evaluation points the output is the exact datum, independent of the network
+parameters; the branch adds no parameters. The PDE and boundary terms of
+Eq.~\eqref{eq:loss} are evaluated on $\tilde u_\theta$; the IC term is
+evaluated on the raw field $u_\theta$, because $\tilde u_\theta$ is identically
+$u_0$ at $t=0$ and would give no gradient. The penalty keeps the $t>0$ branch
+close to the datum as $t\downarrow0$, so the branch does not introduce a large
+inconsistency.
+
+This is a hard-constraint construction in the spirit of
+\citep{lagaris1998,lu2021hpinn,hao2024hardic}, applied here to a discontinuous
+datum. Rather than the usual $u_0(x)+tN_\theta(x,t)$ ansatz, which suppresses
+the network correction near $t=0$, we switch branches at $t=0$ and train the
+$t>0$ branch with the IC penalty. The soft-constraint baseline uses the same
+architectures without the branch and with the IC penalty applied directly to
+the network output.
+
+\section{Results}
+\label{sec:results}
+
+Errors are reported as $L^1$ (mean absolute) and $L^\infty$ (maximum) on a
+common $201\times101$ space-time grid against this reference; the
+finite-volume fields are sampled at the same time levels as the PINN. Because
+the maximum is sensitive to the time sampling, all methods are scored on this
+common grid. The finite-volume scheme starts from the exact discontinuous
+datum, so its error vanishes at $t=0$, whereas the soft-IC PINN must learn the
+initial condition and its largest error is there. These norms are used only
+for evaluation; training minimizes the composite loss of Eq.~\eqref{eq:loss}.
+
+\subsection{Accuracy over the six cases}
+\label{sec:accuracy}
+The finite-volume scheme is consistently more accurate than the baseline
+PINN. At $\Delta x=\pi/200$ its $L^1$ error on the common grid is
+$(1.6$--$2.1)\times10^{-3}$, compared with $(0.8$--$1.6)\times10^{-2}$ for the
+PINN, so the scheme has four to nine times lower error; the largest ratio is
+$9.4$ (linear, $\nu=0.004$) and the smallest $4.2$ (nonlinear, $\nu=0.012$).
+The gap is similar for both problems. PINN values are five-seed means at the
+3000-epoch budget, scored against the same reference as the finite-volume
+solutions.
+
+The soft-IC baseline's $L^\infty$ error is $0.70$--$0.80$. Most of it is at
+$t=0$: removing that frame lowers the seed-averaged error to $0.22$--$0.47$,
+still above the finite-volume $0.07$--$0.20$ on the same grid. Some individual
+runs remain as high as $0.54$ even after removing that frame, so the initial
+layer explains the average but not every run. The $L^1$ error behaves
+differently: removing $t=0$ leaves it nearly unchanged, consistent with the
+initial layer being a small fraction of the space-time average; the exact-IC
+results below confirm that exact initial conditions do not close the $L^1$
+gap. With soft constraints, architecture changes help only unevenly; a
+sine activation brings the linear $\nu=0.012$ error to $2.3$ times the
+finite-volume value but does not improve the nonlinear problems.
+Section~\ref{sec:arch} shows that exact initial conditions reduce the
+$L^\infty$ gap, but the finite-volume scheme remains more accurate.
+
+\subsection{Linear convection--diffusion}
+Figure~\ref{fig:linear} shows the final-time profile of the exact-IC sine
+network; at this time it tracks the reference closely, with the visible
+deviation near the outflow. The limited scheme is second order in smooth
+regions but only first order across the moving front, so whole-grid $L^1$
+convergence orders are about $1.0$--$1.4$. At $t=0$ the soft-IC PINN's
+$L^\infty$ error is at $x=\pi/2$. An optimally smeared step would give a
+half-jump error of $0.5$; here the error is larger because the learned
+transition is displaced as well as smoothed: at $x=\pi/2$ the network returns
+$0.69$ where the Richardson-extrapolated solution is $1.5$, an error of
+$0.81$. As the solution evolves, the maximum error over the domain decays
+(from $0.81$ at $t=0$ to $0.27$ at $t=0.5$ and $0.08$ at $t=2$), consistent
+with an error that originates at the initial datum. The exact initial
+condition of Section~\ref{sec:hardic} removes this contribution; the residual
+whole-grid $L^\infty$ occurs shortly after $t=0$ at the front, while at the
+final time the profile is nearly indistinguishable from the reference except
+near the outflow.
+
+\begin{figure}
+  \centering
+  \includegraphics[width=0.62\textwidth]{\resultsdir/snapshot_linear_nu0.012_hard_ic.png}
+  \caption{Linear $\nu=0.012$: final-time profiles for the exact-IC
+    $4\times64$ sine network (seed 2). The solid black curve is the Richardson-extrapolated
+    Lax--Wendroff reference, the red dashed curve is the PINN, and the
+    dotted blue curve is the limited Lax--Wendroff solution at
+  $\Delta x=\pi/200$.}
+  \label{fig:linear}
+\end{figure}
+
+\subsection{Low-diffusivity stress test}
+As $\nu$ decreases the front sharpens. At $\nu=10^{-4}$ the exact-IC
+$4\times64$ sine model (linear) and the $4\times64$ $\tanh$ model (nonlinear),
+each with three seeds, have $L^\infty=0.68\pm0.19$ and $0.63\pm0.05$, compared
+with $0.34$--$0.41$ for the limited scheme on the same grid; their $L^1$ errors
+are $8.3\times10^{-3}$ and $4.1\times10^{-2}$, versus $2.4\times10^{-3}$ and
+$3.9\times10^{-3}$ (Figure~\ref{fig:stress}). The exact IC removes the
+initial-layer contribution (the soft-IC baseline had
+$L^\infty\approx0.87$--$0.90$), but the moving front and, in the nonlinear
+case, the downstream shocks now dominate; in the linear case the largest
+errors for two of the three seeds are at the outflow.
+
+The reference $L^\infty$ self-convergence on the common grid at this value is
+$3.9\times10^{-2}$ (linear) and $1.0\times10^{-1}$ (nonlinear), so the
+stress-test $L^\infty$ values carry a reference uncertainty of roughly
+$10$--$25\%$ for the finite-volume scheme and $6$--$16\%$ for the PINN. The
+ordering is unchanged, but the absolute values are less precise than at
+$\nu=0.012$. The classical $L^1$ continues to decrease under refinement (to
+$9.0\times10^{-4}$ and $1.9\times10^{-3}$ at $\pi/400$). The nonlinear
+$L^\infty$ at the unresolved viscous shock stays near $0.35$--$0.41$, as
+expected while the shock remains under-resolved; the linear $L^\infty$ falls
+to $0.19$ at $\pi/400$ as the diffusive front is resolved.
+
+\begin{figure}
+  \centering
+  \includegraphics[width=0.48\textwidth]{\resultsdir/analysis_stress_linear_hard_ic.png}
+  \includegraphics[width=0.48\textwidth]{\resultsdir/analysis_stress_nonlinear_hard_ic.png}
+  \caption{Stress test at $\nu=10^{-4}$: linear (left) and nonlinear (right).
+    The solid black curve is the Richardson-extrapolated Lax--Wendroff
+    reference, the dotted blue curve is the limited Lax--Wendroff solution at
+    $\Delta x=\pi/200$, and the red dashed curve is the exact-IC PINN
+  ($4\times64$ sine for linear, $4\times64$ $\tanh$ for nonlinear).}
+  \label{fig:stress}
+\end{figure}
+
+\subsection{Exact initial condition and architecture}
+\label{sec:arch}
+Table~\ref{tab:arch} compares the eight plain architectures of
+Section~\ref{sec:variants} with exact initial conditions, each trained from
+five seeds at $\nu=0.012$. The branch adds no parameters, so the exact-IC rows
+are architecture-for-architecture comparable. The table includes soft-IC
+controls only for the two $4\times64$ networks; for those, exact IC removes the
+initial-layer error, and across the full exact-IC sweep the mean $L^\infty$ is
+$0.25$--$0.43$ on the linear problem and $0.18$--$0.35$ on the nonlinear
+problem, compared with $0.70$--$0.80$ for the soft-IC $4\times64$ baseline. The
+lowest means remain above the finite-volume values ($0.09$
+linear, $0.07$ nonlinear): on the nonlinear problem the $4\times64$ and
+$6\times64$ $\tanh$ networks give the lowest $L^\infty$, while the $4\times64$
+sine network gives the lowest $L^1$. On the linear problem the $4\times128$
+sine network gives the lowest $L^\infty$ and the $4\times64$ sine network the
+lowest $L^1$. Differences among the best few architectures are within one
+standard deviation, so these rankings are indicative rather than
+statistically resolved.
+
+Larger or deeper sine networks do not improve the linear tradeoff. The
+$6\times64$ sine network becomes unstable on the nonlinear problem, where one
+seed reaches $L^1=0.207$, and the $4\times128$ sine network gives a higher
+$L^1$ than the $4\times64$ sine network on both problems. The $4\times64$ sine
+network is therefore the better sine choice for $L^1$, while the $4\times128$
+sine network buys only a small linear $L^\infty$ gain.
+
+Exact IC is primarily an $L^\infty$ correction and closes neither gap: the
+best $L^1$ and $L^\infty$ values remain about $2.5$--$3$ times those of the
+finite-volume scheme. On the linear problem it slightly worsens $L^1$ relative
+to the soft-IC sine baseline, while on the nonlinear problem it improves it;
+both differences are within one standard deviation. Once the initial layer is
+removed, architecture choice sets the remaining
+accuracy, but the finite-volume scheme remains the more accurate method.
+
+\begin{table}[t]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llcccc}
+    \toprule
+    Variant & Setting & \multicolumn{2}{c}{Linear} & \multicolumn{2}{c}{Nonlinear}\\
+    \cmidrule(lr){3-4}\cmidrule(lr){5-6}
+    & & $L^1\,[10^{-3}]$ & $L^\infty$ & $L^1\,[10^{-3}]$ & $L^\infty$\\
+    \midrule
+    \multicolumn{6}{l}{\emph{Soft IC (5 seeds, 3000 epochs)}}\\
+    Baseline & $\tanh$, $4\times64$          & $13.7{\pm}5.4$ & $0.77{\pm}0.23$ & $8.41{\pm}5.41$ & $0.73{\pm}0.20$\\
+    Sine     & $\sin$, $4\times64$           & $4.46{\pm}1.88$ & $0.74{\pm}0.19$ & $8.85{\pm}4.27$ & $0.73{\pm}0.18$\\
+    \midrule
+    \multicolumn{6}{l}{\emph{Exact IC (5 seeds, 3000 epochs)}}\\
+    Tanh     & $2\times32$                   & $20.6{\pm}6.1$ & $0.34{\pm}0.11$ & $20.4{\pm}7.7$ & $0.30{\pm}0.11$\\
+    Tanh     & $4\times64$                   & $13.1{\pm}4.4$ & $0.35{\pm}0.20$ & $6.40{\pm}2.9$ & $0.19{\pm}0.11$\\
+    Tanh     & $6\times64$                   & $11.4{\pm}5.9$ & $0.43{\pm}0.20$ & $6.98{\pm}1.7$ & $0.18{\pm}0.08$\\
+    Tanh     & $4\times128$                  & $8.75{\pm}4.1$ & $0.33{\pm}0.15$ & $8.62{\pm}5.1$ & $0.28{\pm}0.16$\\
+    Sine     & $2\times32$                   & $5.96{\pm}1.7$ & $0.27{\pm}0.10$ & $10.4{\pm}4.1$ & $0.23{\pm}0.10$\\
+    Sine     & $4\times64$                   & $4.85{\pm}2.1$ & $0.27{\pm}0.15$ & $5.80{\pm}1.6$ & $0.21{\pm}0.10$\\
+    Sine     & $6\times64$                   & $12.1{\pm}7.8$ & $0.27{\pm}0.11$ & $54{\pm}77$ & $0.35{\pm}0.23$\\
+    Sine     & $4\times128$                  & $9.62{\pm}5.1$ & $0.25{\pm}0.11$ & $18.0{\pm}6.6$ & $0.28{\pm}0.09$\\
+    \midrule
+    \multicolumn{6}{l}{\emph{Finite volume}}\\
+    \multicolumn{2}{l}{Lax--Wendroff (limited), $\pi/200$} & $1.92$ & $0.09$ & $2.01$ & $0.07$\\
+    \bottomrule
+  \end{tabular}
+  \caption{PINN and finite-volume comparison at $\nu=0.012$. PINN entries are
+    mean$\pm$s.d. over five seeds; predictions are not ensembled. All errors
+    are evaluated on the common $201\times101$ space-time grid. The soft-IC
+    rows use the two $4\times64$ architectures without the exact-IC branch;
+    the exact-IC rows use Eq.~\eqref{eq:hardic}. The Lax--Wendroff row is a
+  single deterministic solve.}
+  \label{tab:arch}
+\end{table}
+
+\section{Discussion and conclusion}
+\label{sec:discussion}
+For this problem the limited finite-volume scheme remains the more accurate
+method: about $2\times10^{-3}$ $L^1$ at $\Delta x=\pi/200$, against $10^{-2}$
+for the baseline PINN. The PINN's $L^\infty$ error, however, is dominated by
+the discontinuous initial datum rather than by the interior solution, and
+imposing the datum exactly removes that contribution at no parameter cost. In
+the architecture sweep, exact IC reduces the mean $L^\infty$ to
+$0.18$--$0.43$, but the finite-volume scheme remains about $2.5$--$3$ times
+more accurate in both norms. It does not close either gap, and at
+$\nu=10^{-4}$ the moving front and the outflow dominate again; the reference
+$L^\infty$ uncertainty at that value ($4\times10^{-2}$--$10^{-1}$) is also
+larger than at $\nu=0.012$.
+
+The lowest mean architecture depends on the target: the $4\times64$ sine
+network for linear $L^1$, $4\times128$ sine for linear $L^\infty$, and the
+$4\times64$ or $6\times64$ $\tanh$ network for nonlinear $L^\infty$; these
+differences are within seed variability. None of these choices changes the
+overall conclusion. For this problem the limited scheme remains the better
+choice. For a PINN, the exact initial condition is the most effective change
+for $L^\infty$ among those tested, whereas the sine activation gives the
+largest linear $L^1$ improvement; further gains require resolving the moving
+front rather than the initial datum.
+
+Figure~\ref{fig:discussion_profiles} shows final-time profiles for both
+problems. The exact-IC PINN tracks the reference and the limited scheme over
+most of the domain; the visible differences are at the moving front and near
+the outflow, where the residual $L^\infty$ error remains.
+
+\begin{figure}
+  \centering
+  \includegraphics[width=0.90\textwidth]{\resultsdir/discussion_profiles.png}
+  \caption{Final-time profiles at $\nu=0.012$. Linear (left): exact-IC
+    $4\times64$ sine network (seed 2). Nonlinear (right): exact-IC
+    $4\times64$ $\tanh$ network (seed 0). Solid black: reference; red dashed:
+    PINN; dotted blue: limited Lax--Wendroff at $\Delta x=\pi/200$. The PINN
+  overlaps the reference except near the moving front and the outflow.}
+  \label{fig:discussion_profiles}
+\end{figure}
+
+\section*{Acknowledgment}
+The code and text were developed with assistance from the DeepSeek V4.1
+Flash language model.
+
+\bibliographystyle{plainnat}
+\setlength{\bibsep}{0pt}
+\bibliography{references}
+
+\end{document}

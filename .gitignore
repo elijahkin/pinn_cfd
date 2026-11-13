@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+*.npz
+
+# Generated experiment output. Keep only the summaries used by the paper.
+results/*
+!results/matrix.csv
+!results/matrix_pinn_seeds.csv
+!results/arch_runs/
+results/arch_runs/*
+!results/arch_runs/*.csv
+!results/arch_runs_hard_ic/
+results/arch_runs_hard_ic/*
+!results/arch_runs_hard_ic/*.csv
+!results/arch_runs_hard_ic_stress/
+results/arch_runs_hard_ic_stress/*
+!results/arch_runs_hard_ic_stress/logs/
+results/arch_runs_hard_ic_stress/logs/*
+!results/arch_runs_hard_ic_stress/logs/*.log
+
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
